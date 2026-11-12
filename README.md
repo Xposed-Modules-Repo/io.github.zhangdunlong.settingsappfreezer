@@ -1,130 +1,343 @@
-# 设置内冻结 · Settings App Freezer
+# settings-app-freezer
 
-为系统「设置 → 应用信息」页注入 **冻结 / 解冻** 按钮，一键停用任意用户应用。
-为 **LSPosed + ColorOS / RealmeUI / 现代 Android** 重新实现。
+> 在系统「设置 → 应用信息」页注入 **冻结 / 解冻** 按钮，一键停用用户应用；系统应用需显式开启高风险开关后才可冻结。
+> 为 **LSPosed + ColorOS / RealmeUI / 现代 Android** 重新实现。
 
-> 本仓库是 Xposed-Modules-Repo 的**模块分发仓库**，只存放元数据与发布产物。
-> **源码**请见 <https://github.com/zhangdunlong/settings-app-freezer>
+[![License: GPL-3.0](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![Xposed](https://img.shields.io/badge/Xposed-LSPosed-9E4B00.svg)](https://github.com/LSPosed/LSPosed)
+[![Android](https://img.shields.io/badge/Android-8.0%2B-3DDC84.svg)](https://developer.android.com/)
+[![Release](https://img.shields.io/github/release/zhangdunlong/settings-app-freezer.svg)](https://github.com/zhangdunlong/settings-app-freezer/releases)
 
 ---
 
-## 这是什么
+## 简介
 
-Android 8 之后官方设置里的「停用」入口被移除，冻结应用通常得靠 `pm disable-user`
-或 Titanium Backup 这类外部工具。本模块把冻结能力直接放回你每天都会经过的
-「应用信息」页面 —— 打开页面，点一下，应用即冻结；从桌面消失，数据保留。
+Android 8 之后，官方设置里的「停用」入口被移除，想冻结应用通常得靠 `pm disable-user`、
+Titanium Backup 这类外部工具，操作繁琐且容易误伤系统组件。
 
-## 核心功能
+本项目是一个 **Xposed / LSPosed 模块**：它会在每个应用的「应用信息」页面右下角
+注入一个浮动按钮，点一下即可冻结（`DISABLED_USER`）或解冻该应用。冻结后应用会从
+桌面与启动器消失，数据保留，随时可解冻恢复。
 
-- **一键冻结 / 解冻** —— 应用信息页浮动按钮，冻结后应用从桌面消失，数据完整保留
-- **状态一目了然** —— 未冻结青色，已冻结薄荷绿；颜色 + 文案双通道表达，不单靠颜色编码
-- **已冻结应用列表** —— 底部「❄ 已冻结 N」入口带实时计数角标，弹窗列出全部已冻结应用
-  （图标 + 应用名 + 包名），点击任意行即解冻
-- **仅统计用户主动冻结** —— 只计 `DISABLED_USER`，排除系统出厂禁用项
-- **长按诊断** —— 显示目标包名、启用状态、是否系统应用、是否被保护
+与老一代冻结类模块的关键差异：
 
-## 深层安全保护
-
-误冻系统组件会导致设备无法使用。本模块**动态识别**（非硬编码）并拒绝冻结：
-
-- 系统关键包 —— 设置、SystemUI、权限控制器、应用商店、GMS 等
-- 当前桌面启动器 —— 冻结它会让你没有桌面可用
-- 当前启用的输入法 —— 冻结它会让全局无法输入
-- 正在前台运行的应用
-
-被拦截时会明确告知原因，不会静默失败。
-
-## 分身（App Twin / MultiApp）支持
-
-- 冻结 / 解冻**精确到 Android user**，可在分身内单独冻结而不影响本机原版
-- 分身环境下按钮显示 `[分身]` 前缀，读屏播报「分身应用」
-
-## 无障碍
-
-- 全量 `contentDescription`（含状态与拦截原因），读屏朗读整行而非割裂碎片
-- 按钮具备 `focused` 态，键盘 / 导航设备可达
-- 列表行触控目标 ≥56dp，文字对比度全部达 WCAG AA（≥4.5:1）
-
-## 技术要点
-
-| | |
+| 维度 | 本项目 |
 |---|---|
-| **ROM 无关** | 不 hook 任何厂商内部类名，改用 Intent 判定 + 视图内容特征识别 |
-| **多层兜底识别** | 多级包名解析路径 + 归一化（兼容 `//com.example.app` 这类带斜杠的值），最后用 `getApplicationInfo()` 硬验证 |
-| **六层生命周期 hook** | `onCreate` / `onResume` / `onPostResume` / `onNewIntent` / `onWindowFocusChanged` / `ViewRootImpl.performTraversals` |
-| **跨 Activity 交接** | 宿主销毁时把注入转交给持焦点窗口，独立 12 秒重试预算 |
-| **零 Gradle 构建** | 纯命令行链路，无需 Android Studio |
+| 识别方式 | 纯 Intent 判定 + **视图布局信号**，不 hook 任何厂商内部类名 |
+| 厂商适配 | ColorOS / RealmeUI / OPPO / OnePlus 两段式页面已处理 |
+| 安全性 | 动态识别并**拒绝冻结**桌面、输入法、系统关键包与前台应用 |
+| 构建 | 纯命令行链路，**无需 Android Studio / Gradle** |
 
-### 关于 ColorOS 的两段式页面
+---
 
-旧版冻结类模块在现代 ROM 上失效，主因是 ColorOS 应用信息页的真实结构：
+## 功能特性
 
-```
-com.android.settings.applications.InstalledAppDetailsTop        ← 瞬时 Activity，启动即销毁
-                    ↓ 交接
-com.android.settings.Settings / SubSettings                     ← 真正渲染，单 Activity 内换页
-```
+- **一键冻结 / 解冻** —— 应用信息页的 56dp 可拖动悬浮球，颜色即状态，不遮挡列表入口
+- **已冻结应用列表** —— 长按悬浮球 →「已冻结应用 (N)」，一眼看清冻结了哪些应用，点击列表行即解冻
+- **冻结系统应用（可选，默认关闭）** —— 长按菜单中开启；启用前强制风险确认，
+  每次冻结逐包二次确认；核心系统组件永远不可冻结
+- **ROM 无关的页面识别** —— 通过 `ACTION_APPLICATION_DETAILS_SETTINGS` 的 Intent
+  与窗口布局完成信号定位页面，不依赖 `com.android.settings` 内部类名
+- **深层安全保护** —— 系统应用默认禁止；自动拒绝冻结硬白名单、常驻系统进程、
+  当前桌面启动器、当前输入法、前台运行中的应用，避免手滑变砖
+- **冻结状态可视化** —— 未冻结青色 `#1AA6C4`，已冻结薄荷绿 `#3FBFA8`，
+  系统应用琥珀色 `#C2601A`
+- **长按菜单** —— 诊断信息（包名 / 状态 / 是否系统应用 / 保护原因 / 开关状态）
+  与「冻结系统应用」开关
+- **自适应注入** —— 视图树布局完成 + 20 轮短延迟重试，适配各家 ROM 的加载时序
+- **零 Gradle 构建** —— `bash build.sh` 即可产出已签名 APK
 
-在 `onCreate` 注入时布局尚未测量（`w=0 h=0`），而百余毫秒后的首次重试时宿主已经销毁 ——
-**重试窗口与页面存活窗口完全错开**，按钮因此永不出现。
-
-本模块通过跨 Activity 交接 + 可重试的内容特征守卫解决该问题。
+---
 
 ## 运行要求
 
-- Android 8.0 (API 26) 及以上
-- **LSPosed** 框架（Zygisk / NeoZygisk 环境）
-- Root 权限
-- 已验证：OnePlus PJZ110 / Android 16 (API 36) / ColorOS
+| 项目 | 要求 |
+|---|---|
+| Android | 8.0 (API 26) 及以上 |
+| Xposed 框架 | **LSPosed**（含 Zygisk / NeoZygisk 环境） |
+| 权限 | Root（LSPosed 依赖 Zygisk 注入） |
+| 已验证设备 | OnePlus PJZ110 / Android 16 (API 36) / ColorOS |
+| 兼容范围 | 已覆盖 `com.android.settings` 及 ColorOS / OPPO / Realme / OnePlus 设置包 |
 
-## 安装
+> ⚠️ 本项目需要 Root 与 Xposed 框架。仅在你自己的设备上使用，并遵守当地法律法规。
 
-1. 下载 Releases 中的 `freezer-module.apk` 安装到手机
-2. LSPosed Manager → 模块 → 勾选 **settings-app-freezer**
-3. 进入模块 → 作用域 → **同时勾选**以下两项：
+---
+
+## 安装与使用
+
+### 1. 安装 APK
+
+从 [Releases](https://github.com/zhangdunlong/settings-app-freezer/releases) 下载
+`freezer-module.apk`，传到手机安装（需允许「安装未知来源应用」）。
+
+或用 adb：
+
+```bash
+adb install -r freezer-module.apk
+```
+
+> **从旧版升级**：v1.0.0 起 Application ID 由 `com.zdl.freezer` 改为
+> `io.github.zhangdunlong.settingsappfreezer`。若你装过旧包名版本，
+> 请先卸载旧版（`adb uninstall com.zdl.freezer`）再安装，两者互不影响。
+> 已冻结的应用状态按**目标应用包名**记录，与本模块包名无关，不受影响。
+
+### 2. 在 LSPosed 中启用
+
+1. 打开 **LSPosed Manager → 模块**，勾选 **settings-app-freezer**
+2. 进入模块 → **作用域**，勾选以下**两项**：
 
    | 作用域 | 缺失后果 |
    |---|---|
    | **系统框架**（`system`） | 模块开机时不注入，任何页面都不会有按钮 |
    | **设置**（`com.android.settings`） | 模块能加载，但不会 hook 任何设置进程 |
 
-   > ⚠️ **两项都必须勾**。缺任意一项都不会生效，且**没有任何界面提示**。
+   > ⚠️ **两项都必须勾**。缺任意一项都不会生效，且**没有任何界面提示** ——
+   > 这是本项目最容易踩的坑。
 
-4. **重启手机**（LSPosed 在开机时读入作用域，仅强停设置进程不够）
-5. 打开任意应用信息页，即出现冻结按钮
+3. **重启手机** —— LSPosed 在开机时把作用域读入内存，仅强停设置进程不生效
 
-## 排查：装好了但没反应
+### 排查：装好了但没反应
 
-```bash
-adb shell su -c 'grep Freezer /data/adb/lspd/log/modules_*.log | tail -50'
-```
+按以下顺序定位（日志命令见文末「反馈」）：
 
 | 日志现象 | 含义 | 处理 |
 |---|---|---|
 | 完全没有 `FreezerModule` 日志 | 作用域未生效 | 检查 `system` 与 `com.android.settings` 两项是否都勾 |
 | 有 hook 日志，无 `button bar injected` | 包名未解析到 | 该机型页面结构未适配，请附日志提 Issue |
+| 有 `handOver aborted: not an app-info page` | 页面内容特征不符 | 确认当前确为应用信息页（页面须含「强行停止」） |
 
-## 已知限制
+### 3. 使用
 
-- **需要 Root + LSPosed**，作用域改动后必须重启手机
-- **系统应用通常无法冻结** —— `DISABLED_USER` 对系统应用需更高权限，会被拒绝
-- **加固应用可能自我拉活** —— 部分应用带自保护机制
-- **冻结不等于删除** —— 采用框架级「停用」语义，数据完整保留
-- **ColorOS 分身** —— 分身详情页由主用户 settings 进程渲染，若页面 Intent 未携带 user 标识，
-  分身作用域可能需手动指定
-- **其他 ROM 首次适配** —— 需提供 LSPosed 日志协助排查
+打开 **设置 → 应用 → 任意应用 → 应用信息**，页面出现一个**可拖动的悬浮球**（❄）：
 
-## 反馈
+| 应用状态 | 球体颜色 |
+|---|---|
+| 未冻结 | 青色 `#1AA6C4` |
+| 已冻结 | 薄荷绿 `#3FBFA8` |
+| 系统应用（未冻结 / 已冻结） | 琥珀色 `#C2601A` / `#D98B3A` |
 
-遇到问题请到源码仓库提交 Issue，并附上：
+- **单击** —— 冻结 / 解冻，Toast 显示结果
+- **长按** —— 打开「冻结设置」菜单：**已冻结应用 (N)** / **诊断信息** / **冻结系统应用**开关
+- **拖动** —— 任意移动位置；松手后位置被记住，跨页面与重启保持。
+  首次出现在右下角空白带，不会遮挡列表入口
+
+#### 冻结系统应用（高风险，默认关闭）
+
+系统应用默认是**禁止冻结**的（按钮置灰，长按诊断可看到保护原因）。如需启用：
+
+1. 长按主按钮 →「冻结设置」→ 点击「冻结系统应用：已关闭（点击开启）」
+2. 阅读风险说明，**勾选「我已阅读并了解上述风险」**后「启用」按钮才可点击
+3. 之后每次冻结系统应用，仍会弹出**逐包二次确认**（应用名 / 包名 / 目标用户 / 恢复命令）
+
+| 项目 | 说明 |
+|---|---|
+| 允许范围 | 预置 / 更新过的系统应用，且不在硬白名单、非常驻进程、非当前桌面 / 输入法 / 前台 |
+| 永不放开 | 系统框架、设置、SystemUI、电话 / 通信、蓝牙、NFC、网络栈、Wi-Fi、权限控制器、本模块自身 |
+| 作用用户 | 仅当前应用信息页解析出的 Android user；分身用户需各自开启开关 |
+| 视觉区分 | 悬浮球呈琥珀色、读屏播报「系统应用」、已冻结列表行加 `[系统]` 前缀 |
+| 关闭开关 | **不会自动解冻**已冻结的系统应用；请在已冻结列表中逐项解冻 |
+
+> ⚠️ 系统应用之间存在依赖关系，误冻可能造成频繁 FC、开机卡顿、通知 / 推送失效或 OTA 失败。
+> 恢复方式：在「已冻结应用列表」点击该项一键解冻；无法进入系统时用
+> `adb shell pm enable --user <用户ID> <包名>`。
+> 部分 ROM 的 PMS 会直接拒绝停用系统应用，此时会提示「操作未生效」，不会谎报成功。
+
+#### 查看已冻结的应用
+
+设置里应用很多时，不必逐个进应用信息页翻找。**长按悬浮球 →「已冻结应用 (N)」** 即为入口：
+
+- `N` 是当前已冻结应用数量实时计数，冻结/解冻后自动刷新
+- 数量为 `0` 时按钮置灰，点击提示「当前没有已冻结的应用」
+- 点击弹出列表：每行显示 **应用图标 + 应用名 + 包名**
+- **点击任意一行即解冻该应用**，并从列表中移除
+- 只统计 `DISABLED_USER`（用户主动冻结），不含系统出厂禁用的应用
+
+### 排查问题
+
+优先查看 LSPosed 持久化日志（比 `logcat` 可靠，buffer 循环太快）：
 
 ```bash
-adb shell su -c 'grep Freezer /data/adb/lspd/log/modules_*.log | tail -50'
+adb shell su -c 'cat /data/adb/lspd/log/modules_*.log | grep Freezer | tail -50'
 ```
 
-同时请说明设备型号、Android 版本、ROM 与 LSPosed 版本。
+或实时抓取：
+
+```bash
+adb logcat -v threadtime | grep FreezerModule
+```
+
+关键日志含义：
+
+| 日志 | 含义 |
+|---|---|
+| `initZygote, module loaded` | 模块已加载。**缺失**说明作用域未生效或类初始化失败 |
+| `hooked ViewRootImpl.performTraversals` | 布局监听已注册（主力注入路径） |
+| `button injected for xxx` | **注入成功** |
+| `GAVE UP injecting button` | 20 轮重试仍失败，请提交 Issue 并附日志 |
+| `blocked freeze of xxx (桌面启动器)` | 安全保护生效，属预期行为 |
 
 ---
 
-**许可**：[GPL-3.0](https://github.com/zhangdunlong/settings-app-freezer/blob/main/LICENSE)
-· **源码**：<https://github.com/zhangdunlong/settings-app-freezer>
+## 从源码构建
+
+### 依赖
+
+| 依赖 | 版本 | 说明 |
+|---|---|---|
+| JDK | 17 (Temurin) | 提供 `javac` / `jar` / `keytool` |
+| Android SDK Platform | `android-36` | 提供 `android.jar` |
+| Android Build-Tools | 36.x | 提供 `aapt2` / `d8` / `zipalign` / `apksigner` |
+| Xposed API | `api-82.jar` | LSPosed 的 Xposed API 桩，仅编译期使用 |
+| Python | 3.x | 用于把 `classes.dex` 注入 APK |
+
+`api-82.jar` 可从 Maven 镜像获取（`de.robv.android.xposed` 构件），或从
+[Xposed-API](https://github.com/libxposed/api) 仓库获取。
+
+### 目录布局
+
+`build.sh` 按以下约定查找工具链（也可用环境变量覆盖）：
+
+```
+<任意目录>/
+├── jdk/                    # JDK 17
+├── android-sdk/            # Android SDK
+│   ├── platforms/android-36/
+│   └── build-tools/36.0.0/
+├── lib/api-82.jar          # Xposed API 桩
+├── debug.keystore          # 签名密钥（自动生成，已被 .gitignore 排除）
+└── FreezerModule/          # ← 本项目
+```
+
+或直接指定环境变量：
+
+```bash
+JDK_HOME=/path/to/jdk17 \
+ANDROID_SDK_ROOT=/path/to/android-sdk \
+XPOSED_API_JAR=/path/to/api-82.jar \
+bash build.sh
+```
+
+### 构建
+
+```bash
+bash build.sh
+```
+
+输出：`freezer-module.apk`（已用 debug 密钥签名，v1/v2/v3 签名方案均通过）。
+
+正式发布请提供自己的签名密钥（**不要提交到仓库**）：
+
+```properties
+# keystore.properties（已被 .gitignore 排除）
+KEYSTORE_PATH=/path/to/release.keystore
+KEYSTORE_ALIAS=myalias
+KEYSTORE_PASS=yourpassword
+```
+
+---
+
+## 目录结构
+
+```
+settings-app-freezer/
+├── src/com/zdl/freezer/
+│   └── FreezerModule.java      # 模块全部逻辑（hook / 注入 / 冻结 / 保护）
+├── assets/
+│   └── xposed_init             # LSPosed 入口声明
+├── lib/
+│   └── add_dex.py              # 构建辅助：把 classes.dex 注入 base.apk
+├── AndroidManifest.xml         # 包名、版本号、Xposed 元数据
+├── build.sh                    # 命令行构建流水线
+├── version.properties          # 版本号唯一来源（语义化版本）
+├── CHANGELOG.md                # 版本变更记录
+├── RELEASE_NOTES.md            # Release 正文
+├── LICENSE                     # GPL-3.0（原文）
+├── NOTICE.md                   # 第三方组件与构建工具链授权声明
+├── README.md
+└── .gitignore
+```
+
+---
+
+## 版本号约定
+
+采用 [语义化版本](https://semver.org/lang/zh-CN/)：
+
+```
+MAJOR.MINOR.PATCH    →  version.properties: VERSION_NAME
+                      →  AndroidManifest.xml: android:versionName
+MAJOR×10000+...      →  AndroidManifest.xml: android:versionCode
+```
+
+`version.properties` 是唯一来源，`build.sh` 读取后回显；构建产物文件名不含版本号
+（保持 `freezer-module.apk` 便于 LSPosed 识别）。
+
+---
+
+## 已知限制
+
+- **需要 Root + LSPosed**，且 LSPosed 作用域改动后必须重启手机
+- **系统应用默认禁止冻结** —— 需长按菜单显式开启高风险开关并通过两层确认；
+  部分 ROM 的 PMS 仍会拒绝 `DISABLED_USER`（提示「操作未生效」），
+  核心系统组件则永远不可冻结
+- **加固应用可能自我拉活** —— 部分应用带自保护机制，冻结后仍可能被重新拉起
+- **冻结不等于删除** —— 采用框架级「停用」语义，应用数据完整保留
+- **ColorOS 特定适配** —— 已处理两段式页面（`InstalledAppDetailsTop` 为空壳，
+  真正渲染的是父页 `InstalledAppDetails`）；其他 ROM 的首次适配请提交 Issue
+  并附 LSPosed 日志
+- **分身（App Twin）需页面携带 user 标识** —— 分身与原版是**同一包名、
+  不同 Android user**。本模块按应用信息页的 Intent / 字段解析目标 user，
+  但若厂商的详情页完全不带 user 线索，则无法自动区分，需手动指定作用域
+- **部分 ROM 的应用列表页可能无法识别** —— 「设置 → 应用 → 应用列表 → 点应用」
+  这条路径的包名传递方式依赖厂商实现，少数机型可能不显示按钮
+- **无法视觉验证的场景** —— 若设备处于锁屏状态，模块无法自证按钮已渲染，
+  需解锁后人工确认
+
+---
+
+## 贡献
+
+欢迎提交 Issue 与 Pull Request。
+
+**提交 Issue 请附：**
+
+- 设备型号、Android 版本、ROM 名称与版本
+- Xposed 框架版本（LSPosed 版本号）
+- LSPosed 日志中包含 `FreezerModule` 的部分：
+
+  ```bash
+  adb shell su -c 'grep Freezer /data/adb/lspd/log/modules_*.log | tail -50'
+  ```
+
+**开发约定：**
+
+- 保持 ROM 无关性 —— 不要 hook 任何厂商内部类名
+- 静态字段初始化器**禁止**调用 Android 运行时 API（`Handler` / `Looper` /
+  `Context` / 系统服务），否则会在 zygote 阶段 NPE 导致模块静默失效
+- 新增日志请用 `XposedBridge.log` 并统一 `TAG` 前缀
+- 改动后请同步更新 `version.properties`、`CHANGELOG.md`
+
+---
+
+## 致谢
+
+- [LSPosed](https://github.com/LSPosed/LSPosed) —— 现代 Xposed 框架
+- [Xposed API](https://github.com/libxposed/api) —— 模块 API 定义
+- 原版思路参考早期社区冻结类模块（其 hook 点在 Android 8+ 已失效，本项目为完全重写）
+
+---
+
+## 联系方式
+
+- 作者：**zhangdunlong**
+- GitHub：<https://github.com/zhangdunlong>
+- Issue：<https://github.com/zhangdunlong/settings-app-freezer/issues>
+
+## 许可证
+
+[GNU General Public License v3.0](LICENSE)
+
+完整的第三方授权声明（Xposed API、各构建工具链许可）见 [NOTICE.md](NOTICE.md)。
+
+模块链接的 Xposed API（`de.robv.android.xposed.*`）由其作者按 Apache License 2.0
+独立分发，使用该接口不影响本项目源码的 GPL-3.0 条款。
